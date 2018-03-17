@@ -5,6 +5,9 @@
 #include<iostream>
 #include<vector>
 #include<algorithm>
+#include<ctime>
+
+#define THREAD_COUNT 320
 
 using namespace std;
 
@@ -85,10 +88,10 @@ void pagerank(int *cuinlist, int *cudegree, double *cupages, double *cupages2, i
 
 	for (int i = 0; i < iter; i++) {
 		if (i % 2) {
-			single_rank<<<n/512 + 1, 512>>>(cuinlist, cudegree, cupages, cupages2, 2*f + 1, n, d);
+			single_rank<<<n/THREAD_COUNT + 1, THREAD_COUNT>>>(cuinlist, cudegree, cupages, cupages2, 2*f + 1, n, d);
 		}
 		else {
-			single_rank << <n / 512 + 1, 512 >> >(cuinlist, cudegree, cupages2, cupages, 2*f + 1, n, d);
+			single_rank << <n / THREAD_COUNT + 1, THREAD_COUNT >> >(cuinlist, cudegree, cupages2, cupages, 2*f + 1, n, d);
 		}
 	}
 }
@@ -122,11 +125,65 @@ double* naive_pagerank(bool *graph, int n) {
 	return ranks;
 }
 
+float gpu_pagerank(bool *cugraph, int n, int f) {
+	double *cupages, *cupages2, *pages;
+	int *cuinlist, *cudegree;
+	float gpu = 0;
+	cudaEvent_t start, stop;
+
+	cudaMallocManaged(&cuinlist, n*(2 * f + 1) * sizeof(int));
+	cudaMallocManaged(&cudegree, n * sizeof(int));
+
+	cudaMallocManaged(&cupages, n * sizeof(double));
+	cudaMallocManaged(&cupages2, n * sizeof(double));
+	pages = (double*)malloc(n * sizeof(double));
+
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);
+
+	get_lists << <n / THREAD_COUNT + 1, THREAD_COUNT >> > (cugraph, cuinlist, cudegree, f, n);
+	initial_ranks << <n / THREAD_COUNT + 1, THREAD_COUNT >> > (cupages, n);
+	pagerank(cuinlist, cudegree, cupages, cupages2, n, f);
+
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&gpu, start, stop);
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	cudaMemcpy(pages, cupages2, n * sizeof(double), cudaMemcpyDeviceToHost);
+
+	cudaFree(cuinlist);
+	cudaFree(cudegree);
+	cudaFree(cupages);
+	cudaFree(cupages2);
+	free(pages);
+
+	return gpu;
+}
+
+double cpu_pagerank(bool *graph, int n) {
+	clock_t begin, end;
+	double *ranks = (double*)malloc(n * sizeof(double)), cpu;
+	begin = clock();
+
+	ranks = naive_pagerank(graph, n);
+
+	end = clock();
+
+	cpu = (double)(end - begin) / CLOCKS_PER_SEC;
+	cpu *= 1000;
+	free(ranks);
+	return cpu;
+}
+
 int main() {
-	int n = 2000, f = 34, count;
+	int n = 4000, f = 80, count;
 	bool *cugraph, *graph;
-	int *rand1, *rand2, *curand1, *curand2, *cuinlist, *cudegree, *inlist, *degree;
-	double *cupages, *cupages2, *pages, *ranks, cpu, gpu;
+	int *rand1, *rand2, *curand1, *curand2, *degree;
+	double *ranks, cpu;
+	float gpu;
 	rand1 = (int*)malloc(n * sizeof(int));
 	rand2 = (int*)malloc(n * sizeof(int));
 
@@ -148,7 +205,7 @@ int main() {
 	cudaMallocManaged(&cugraph, n * n * sizeof(bool));
 	graph = (bool*)malloc(n * n * sizeof(bool));
 
-	random_outlist<<<n/512 + 1, 512>>>(cugraph, n, curand1, curand2, f);
+	random_outlist<<<n/THREAD_COUNT + 1, THREAD_COUNT>>>(cugraph, n, curand1, curand2, f);
 
 	cudaFree(curand1);
 	cudaFree(curand2);
@@ -157,32 +214,23 @@ int main() {
 
 	cudaMemcpy(graph, cugraph, n * n * sizeof(bool), cudaMemcpyDeviceToHost);
 
-	cudaMallocManaged(&cuinlist, n*(2 * f + 1) * sizeof(int));
-	cudaMallocManaged(&cudegree, n * sizeof(int));
-	inlist = (int*)malloc(n*(2 * f + 1) * sizeof(int));
-	degree = (int*)malloc(n * sizeof(int));
-
-	get_lists << <n / 512 + 1, 512 >> > (cugraph, cuinlist, cudegree, f, n);
-
-	//cudaMemcpy(degree, cudegree, n * sizeof(int), cudaMemcpyDeviceToHost);
+	gpu = 0;
+	for(int i = 0 ; i < 5 ; i++)	gpu += gpu_pagerank(cugraph, n, f);
+	gpu /= 5;
 
 	cudaFree(cugraph);
 
-	cudaMallocManaged(&cupages, n * sizeof(double));
-	cudaMallocManaged(&cupages2, n * sizeof(double));
-	pages = (double*)malloc(n * sizeof(double));
-
-	initial_ranks << <n / 512 + 1, 512 >> > (cupages, n);
-
-	pagerank(cuinlist, cudegree, cupages, cupages2, n, f);
-
-	cudaMemcpy(pages, cupages2, n * sizeof(double), cudaMemcpyDeviceToHost);
-
 	//for (int i = 0; i < n; i++)	cout << i << "\t" << pages[i] << "\n";
 
-	ranks = naive_pagerank(graph, n);
+	cpu = 0;
+	for(int i = 0 ; i < 5 ; i++)	cpu += cpu_pagerank(graph, n);
+	cpu /= 5;
 
-	for (int i = 0; i < n; i++)	cout << i << "\t" << pages[i] << "\t" << ranks[i] << "\t" << "\n";
+	cout << cpu << "ms\n";
+	cout << gpu << "ms\n";
+	cout << "Speed Up:    " << (cpu / ((double)gpu)) << "\n";
+
+	//for (int i = 0; i < n; i++)	cout << i << "\t" << pages[i] << "\t" << ranks[i] << "\t" << "\n";
 
 	return 0;
 }

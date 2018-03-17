@@ -143,6 +143,7 @@ int main() {
 
 	cudaMemcpy(curand1, rand1, n * sizeof(int), cudaMemcpyHostToDevice);
 	cudaMemcpy(curand2, rand2, n * sizeof(int), cudaMemcpyHostToDevice);
+	//Need to check this logic
 
 	cudaMallocManaged(&cugraph, n * n * sizeof(bool));
 	graph = (bool*)malloc(n * n * sizeof(bool));
